@@ -1,0 +1,135 @@
+---
+title: 'R-Machine learning: Prediction assignment writeup'
+author: "Stan Wijn MSc"
+date: "September 4, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Peer-graded Assignment: Prediction Assignment Writeup
+
+## Building the model
+
+First load both the training and final test set.
+
+```{r load}
+library(caret)
+library(readxl)
+pml_training <- read_excel("C:/Users/stanw/Desktop/pml-training.xlsx")
+pml_testing <- read_excel("C:/Users/stanw/Desktop/pml-testing.xlsx")
+# How you build the model?
+# howe you used cross validation
+# what you think the expected out of sample error is
+# why you made the choices you did:
+# predict 20 different test cases
+```
+
+If we inspect the dataset, we find that there are several empty variables. Then I did:
+
+1. Include the usernames in a new training set
+2. Combine the set with all numeric variables
+3. Include new_window and class variable (as a factor)
+4. Remove variables with more then 50% missing and variables without any predictive value (X__1 and X__1.1)
+5. Then I looked at the data to check for completeness and odd behaviour
+
+```{r clean}
+#clean dataset:
+training1 <- pml_training[, 2]
+training1[,2:85] <- dplyr::select_if(pml_training, is.numeric)
+training1[,85] <- pml_training$classe
+training1$new_window <- as.factor(pml_training$new_window)
+training1$classe <- as.factor(training1$X__1.1)
+training1$X__1.1 <- NULL
+training1$user_name <- as.factor(training1$user_name)
+training1 <- training1[, colSums(is.na(training1)) < nrow(training1) * 0.5]
+training1$X__1 <- NULL
+summary(training1)
+```
+
+
+Before I started with my algorithm, I devided the training set ("training1") in a training("training") and test set("testing") with a 75% division. 
+As the testing set does not supply a class variable (because we have to predict it), we need a seperate testing set, to test the accuracy of our algorithm. 
+
+```{r create-set}
+#create training and testing set
+inTrain = createDataPartition(y=training1$classe, p = 0.75, list=FALSE)
+training = training1[ inTrain,]
+testing = training1[-inTrain,]
+```
+
+Default R-studio can be slow when performing machinelearning algorithms, therefore I used parallels to engage multi-treading
+
+```{r multi}
+# Engage multi-treading
+library(parallel);library(doParallel)
+cluster <- makeCluster(detectCores() - 1) #leave 1 core for OS
+registerDoParallel(cluster)
+#
+```
+
+In order to prepare the model, I performed a cross-validation (method = "cv"), dividing the trainingset in random parts. 
+```{r preprocess}
+ctrl <- trainControl(method = "cv", allowParallel = TRUE)
+```
+
+Because there are many machine learning algorithms, I decided to go with the most accurate ones: Boosting and Random-forest to train my algorithm.
+
+```{r train}
+modRandom <- train(classe~., data=training, method = "rf", trControl = ctrl)
+modBoost <- train(classe~., data=training, method = "gbm", trControl = ctrl)
+```
+
+Thereafter, I used the testset I build ("testing") to validate the accuracy of the model. The confusionMatrix command was used to retreive the accuracy of the model.
+
+```{r predict}
+predRandom <- predict(modRandom, testing)
+predBoost <- predict(modBoost, testing)
+
+confusionMatrix(testing$classe, predBoost) #= 0.9965
+confusionMatrix(testing$classe, predRandom) #= 0.9994
+```
+
+Both boosting and random forest had a high accuracy. (>0.99). However, I stil tried to combine both models to explore if it was possible to archieve an even higher accuracy. Considering the very high accuracy, the large number of observations and the variables that can be used to make predictions, I expect that the out-of-sample error is reasonable small. The probability of a bad prediction in the final test set is small.
+
+```{r combinepredict}
+predDF <- data.frame(classe=testing$classe,predRandom, predBoost)
+modBoth <- train(classe ~., method="rf", data=predDF, trControl=ctrl)
+predBoth <- predict(modBoth, testing)
+confusionMatrix(testing$classe, predBoth) #=0.9994
+```
+
+The combined model showed an equal accuracy as the randomforest model. Therefore, I decided to continue with the RF model.
+
+
+## Using the model for predictions
+
+Before we can predict the classe variable of the testing test, we first had to perform the same modifications to the test set as we did with our training set (training1)
+
+```{r clean-testing}
+testing1 <- pml_testing[, 2]
+testing1[,2:85] <- dplyr::select_if(pml_testing, is.numeric)
+testing1$new_window <- as.factor(pml_testing$new_window)
+testing1$user_name <- as.factor(testing1$user_name)
+testing1[ , ! apply( testing1 , 2 , function(x) all(is.na(x)) ) ]
+testing1 <- testing1[, colSums(is.na(testing1)) < nrow(testing1) * 0.5]
+summary(testing1)
+testing1$'X__1.1' <- as.character(testing1$'X__1.1')
+testing1$X__1 <- NULL
+```
+
+When the entire set was cleaned, the prediction model was used to predict the classe variable for the 20 observations in the testset.
+
+```{r predict-testing}
+predTesting <- predict(modRandom, testing1)
+predTesting
+```
+
+
+```{r stop-multi}
+#shut multitreading down
+stopCluster(cluster)
+registerDoSEQ()
+```
